@@ -6,7 +6,10 @@ namespace CambiaAudio;
 /// <summary>Riquadro che compare per un attimo in basso al centro con il nome della nuova uscita.</summary>
 sealed class Osd : Form
 {
+    static readonly Color DefaultBackground = Color.FromArgb(36, 36, 36);
+
     readonly FlowLayoutPanel row;
+    readonly Label icon;
     readonly Label text;
     readonly System.Windows.Forms.Timer hideTimer = new();
 
@@ -16,7 +19,7 @@ sealed class Osd : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(36, 36, 36);
+        BackColor = DefaultBackground;
         Padding = new Padding(18, 12, 22, 12);
 
         row = new FlowLayoutPanel
@@ -28,7 +31,7 @@ sealed class Osd : Form
             Margin = Padding.Empty,
             BackColor = Color.Transparent,
         };
-        var icon = new Label
+        icon = new Label
         {
             AutoSize = true,
             Text = Glyphs.Volume,
@@ -71,9 +74,13 @@ sealed class Osd : Form
         DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int));
     }
 
-    public void ShowText(string message, int milliseconds = 1500)
+    /// <param name="glyph">Icona a sinistra del testo (predefinita: altoparlante).</param>
+    /// <param name="background">Colore di sfondo (predefinito: grigio scuro).</param>
+    public void ShowText(string message, int milliseconds = 1500, string glyph = Glyphs.Volume, Color? background = null)
     {
         text.Text = message;
+        icon.Text = glyph;
+        BackColor = background ?? DefaultBackground;
         row.PerformLayout();
         var content = row.PreferredSize;
         row.Location = new Point(Padding.Left, Padding.Top);
@@ -96,10 +103,12 @@ sealed class Osd : Form
 static class Glyphs
 {
     public const string Volume = "";
+    public const string Microphone = "";
 
     public static string FontName { get; } = FontExists("Segoe Fluent Icons") ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
 
-    public static Icon CreateTrayIcon()
+    /// <param name="micMuted">Se true aggiunge un pallino rosso: microfono in muto.</param>
+    public static Icon CreateTrayIcon(bool micMuted = false)
     {
         bool lightTaskbar = Registry.CurrentUser
             .OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
@@ -114,9 +123,29 @@ static class Glyphs
             g.Clear(Color.Transparent);
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             g.DrawString(Volume, font, brush, new RectangleF(0, 1, 32, 32), format);
+
+            if (micMuted)
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var red = new SolidBrush(Color.FromArgb(232, 17, 35));
+                using var ring = new Pen(lightTaskbar ? Color.White : Color.FromArgb(32, 32, 32), 2f);
+                g.FillEllipse(red, 18, 18, 13, 13);
+                g.DrawEllipse(ring, 18, 18, 13, 13);
+            }
         }
-        return Icon.FromHandle(bitmap.GetHicon());
+
+        // Copia che possiede il proprio handle, così l'icona vecchia si può liberare davvero.
+        IntPtr handle = bitmap.GetHicon();
+        try
+        {
+            using var temp = Icon.FromHandle(handle);
+            return (Icon)temp.Clone();
+        }
+        finally { DestroyIcon(handle); }
     }
+
+    [DllImport("user32.dll")]
+    static extern bool DestroyIcon(IntPtr handle);
 
     static bool FontExists(string name)
     {

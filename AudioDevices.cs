@@ -99,6 +99,78 @@ namespace CambiaAudio
             finally { Marshal.ReleaseComObject(policy); }
         }
 
+        // ---- Microfono ----
+
+        const int CLSCTX_ALL = 23;
+        static readonly Guid IID_IAudioEndpointVolume = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
+
+        /// <summary>Id dei microfoni predefiniti (uso generale e chiamate), senza doppioni.</summary>
+        public static List<string> GetDefaultInputIds()
+        {
+            var ids = new List<string>();
+            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+            try
+            {
+                foreach (var role in new[] { ERole.eConsole, ERole.eCommunications })
+                {
+                    if (enumerator.GetDefaultAudioEndpoint(EDataFlow.eCapture, role, out IMMDevice device) < 0 || device == null) continue;
+                    try
+                    {
+                        Check(device.GetId(out string id));
+                        if (!ids.Contains(id)) ids.Add(id);
+                    }
+                    finally { Marshal.ReleaseComObject(device); }
+                }
+            }
+            finally { Marshal.ReleaseComObject(enumerator); }
+            return ids;
+        }
+
+        /// <summary>true se il microfono è in muto, false se è attivo, null se non c'è nessun microfono.</summary>
+        public static bool? IsMicMuted()
+        {
+            var ids = GetDefaultInputIds();
+            if (ids.Count == 0) return null;
+            bool allMuted = true;
+            foreach (string id in ids)
+                WithEndpointVolume(id, volume =>
+                {
+                    Check(volume.GetMute(out bool muted));
+                    if (!muted) allMuted = false;
+                });
+            return allMuted;
+        }
+
+        /// <summary>Mette o toglie il muto al microfono per tutti i programmi. Restituisce il nuovo stato (true = muto) o null se non c'è un microfono.</summary>
+        public static bool? ToggleMicMute()
+        {
+            bool? muted = IsMicMuted();
+            if (muted == null) return null;
+            bool target = !muted.Value;
+            foreach (string id in GetDefaultInputIds())
+                WithEndpointVolume(id, volume => Check(volume.SetMute(target, IntPtr.Zero)));
+            return target;
+        }
+
+        static void WithEndpointVolume(string id, Action<IAudioEndpointVolume> action)
+        {
+            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+            try
+            {
+                Check(enumerator.GetDevice(id, out IMMDevice device));
+                try
+                {
+                    Guid iid = IID_IAudioEndpointVolume;
+                    Check(device.Activate(ref iid, CLSCTX_ALL, IntPtr.Zero, out object obj));
+                    var volume = (IAudioEndpointVolume)obj;
+                    try { action(volume); }
+                    finally { Marshal.ReleaseComObject(volume); }
+                }
+                finally { Marshal.ReleaseComObject(device); }
+            }
+            finally { Marshal.ReleaseComObject(enumerator); }
+        }
+
         static string ReadString(IPropertyStore store, PropertyKey key)
         {
             PropertyKey k = key;
@@ -180,6 +252,30 @@ namespace CambiaAudio
         [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant pv);
         [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant propvar);
         [PreserveSig] int Commit();
+    }
+
+    // L'ordine dei metodi deve restare questo: conta la posizione nella vtable.
+    [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioEndpointVolume
+    {
+        [PreserveSig] int RegisterControlChangeNotify(IntPtr pNotify);
+        [PreserveSig] int UnregisterControlChangeNotify(IntPtr pNotify);
+        [PreserveSig] int GetChannelCount(out uint pnChannelCount);
+        [PreserveSig] int SetMasterVolumeLevel(float fLevelDB, IntPtr pguidEventContext);
+        [PreserveSig] int SetMasterVolumeLevelScalar(float fLevel, IntPtr pguidEventContext);
+        [PreserveSig] int GetMasterVolumeLevel(out float pfLevelDB);
+        [PreserveSig] int GetMasterVolumeLevelScalar(out float pfLevel);
+        [PreserveSig] int SetChannelVolumeLevel(uint nChannel, float fLevelDB, IntPtr pguidEventContext);
+        [PreserveSig] int SetChannelVolumeLevelScalar(uint nChannel, float fLevel, IntPtr pguidEventContext);
+        [PreserveSig] int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
+        [PreserveSig] int GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, IntPtr pguidEventContext);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool pbMute);
+        [PreserveSig] int GetVolumeStepInfo(out uint pnStep, out uint pnStepCount);
+        [PreserveSig] int VolumeStepUp(IntPtr pguidEventContext);
+        [PreserveSig] int VolumeStepDown(IntPtr pguidEventContext);
+        [PreserveSig] int QueryHardwareSupport(out uint pdwHardwareSupportMask);
+        [PreserveSig] int GetVolumeRange(out float pflVolumeMindB, out float pflVolumeMaxdB, out float pflVolumeIncrementdB);
     }
 
     // L'ordine dei metodi deve restare questo: conta la posizione nella vtable.

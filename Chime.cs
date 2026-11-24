@@ -3,8 +3,8 @@ using System.Media;
 namespace CambiaAudio;
 
 /// <summary>
-/// Suono di conferma breve e morbido (due note, circa 0,2 secondi), generato in memoria:
-/// nessun file audio esterno. Suona sull'uscita predefinita, cioè su quella appena scelta.
+/// Suoni di conferma brevi e morbidi (due note, circa 0,2 secondi), generati in memoria:
+/// nessun file audio esterno. Suonano sull'uscita predefinita.
 /// </summary>
 sealed class Chime : IDisposable
 {
@@ -13,15 +13,21 @@ sealed class Chime : IDisposable
     const double AttackSeconds = 0.005;  // attacco morbido, senza "clic"
     const double ReleaseSeconds = 0.012; // chiusura dolce di ogni nota
 
-    // Mi (E5) e poi Si (B5): un intervallo di quinta, ascendente e delicato.
-    static readonly (double Frequency, double Seconds)[] Notes = { (659.25, 0.075), (987.77, 0.14) };
+    /// <summary>Cambio di uscita: Mi → Si, sale.</summary>
+    public static Chime OutputChanged() => new((659.25, 0.075), (987.77, 0.14));
+
+    /// <summary>Microfono riattivato: La → Mi acuto, sale veloce.</summary>
+    public static Chime MicOn() => new((880.00, 0.06), (1318.51, 0.11));
+
+    /// <summary>Microfono in muto: Mi → La grave, scende.</summary>
+    public static Chime MicOff() => new((659.25, 0.07), (440.00, 0.13));
 
     readonly MemoryStream wav;
     readonly SoundPlayer player;
 
-    public Chime()
+    Chime(params (double Frequency, double Seconds)[] notes)
     {
-        wav = BuildWav();
+        wav = BuildWav(notes);
         player = new SoundPlayer(wav);
         player.Load();
     }
@@ -33,10 +39,10 @@ sealed class Chime : IDisposable
         catch { /* il suono non è essenziale */ }
     }
 
-    static MemoryStream BuildWav()
+    static MemoryStream BuildWav((double Frequency, double Seconds)[] notes)
     {
         var samples = new List<short>();
-        foreach (var (frequency, seconds) in Notes)
+        foreach (var (frequency, seconds) in notes)
         {
             int count = (int)(seconds * SampleRate);
             for (int i = 0; i < count; i++)

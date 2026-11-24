@@ -3,19 +3,27 @@ using System.Runtime.InteropServices;
 
 namespace CambiaAudio;
 
-/// <summary>Icona vicino all'orologio, scorciatoia globale e menu.</summary>
+/// <summary>Icona vicino all'orologio, scorciatoie globali e menu.</summary>
 sealed class TrayApp : ApplicationContext
 {
     const uint MOD_ALT = 0x0001, MOD_CONTROL = 0x0002, MOD_NOREPEAT = 0x4000;
-    const uint VK_A = 0x41;
-    const string HotkeyText = "Ctrl+Alt+A";
+    const uint VK_A = 0x41, VK_M = 0x4D;
+    const int OutputHotkeyId = 1, MicHotkeyId = 2;
+    const string OutputHotkeyText = "Ctrl+Alt+A";
+    const string MicHotkeyText = "Ctrl+Alt+M";
+    static readonly Color MutedBackground = Color.FromArgb(140, 28, 32);
 
     readonly AppSettings settings = AppSettings.Load();
     readonly ContextMenuStrip menu = new();
     readonly NotifyIcon tray;
-    readonly HotkeyWindow hotkey = new();
+    readonly HotkeyWindow hotkeys = new();
     readonly Osd osd = new();
-    readonly Chime chime = new();
+    readonly Chime outputChime = Chime.OutputChanged();
+    readonly Chime micOnChime = Chime.MicOn();
+    readonly Chime micOffChime = Chime.MicOff();
+    readonly System.Windows.Forms.Timer micWatch = new() { Interval = 2000 };
+    bool? micMuted;   // stato mostrato ora nell'icona (null = nessun microfono)
+    Icon? trayIcon;
     DateTime lastTooltipUpdate = DateTime.MinValue;
 
     public TrayApp()
@@ -24,20 +32,31 @@ sealed class TrayApp : ApplicationContext
 
         tray = new NotifyIcon
         {
-            Icon = Glyphs.CreateTrayIcon(),
             ContextMenuStrip = menu,
             Text = "Cambia audio",
             Visible = true,
         };
         tray.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) ShowMenu(); };
         tray.MouseMove += (_, _) => UpdateTooltip();
+        RefreshMicState(force: true);
 
-        hotkey.Pressed += CycleOutput;
-        if (!hotkey.Register(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_A))
-            osd.ShowText($"{HotkeyText} è già usata da un altro programma", 5000);
+        hotkeys.Pressed += id =>
+        {
+            if (id == OutputHotkeyId) CycleOutput();
+            else if (id == MicHotkeyId) ToggleMic();
+        };
+        var busy = new List<string>();
+        if (!hotkeys.Register(OutputHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_A)) busy.Add(OutputHotkeyText);
+        if (!hotkeys.Register(MicHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_M)) busy.Add(MicHotkeyText);
+        if (busy.Count > 0)
+            osd.ShowText($"{string.Join(" e ", busy)} già in uso da un altro programma", 5000);
 
-        UpdateTooltip(force: true);
+        // Il muto può cambiare anche da Windows o da altri programmi: l'icona si aggiorna da sola.
+        micWatch.Tick += (_, _) => RefreshMicState();
+        micWatch.Start();
     }
+
+    // ---- Uscita audio ----
 
     /// <summary>Passa all'uscita successiva tra quelle scelte per la scorciatoia.</summary>
     void CycleOutput()
@@ -69,7 +88,7 @@ sealed class TrayApp : ApplicationContext
         try
         {
             AudioDevices.SetDefaultOutput(device.Id);
-            chime.Play(); // suona già sulla nuova uscita
+            outputChime.Play(); // suona già sulla nuova uscita
             osd.ShowText(device.ShortName);
             UpdateTooltip(force: true);
         }
@@ -78,6 +97,49 @@ sealed class TrayApp : ApplicationContext
             osd.ShowText("Errore: " + ex.Message, 4000);
         }
     }
+
+    // ---- Microfono ----
+
+    /// <summary>Mette o toglie il muto al microfono per tutti i programmi.</summary>
+    void ToggleMic()
+    {
+        try
+        {
+            bool? muted = AudioDevices.ToggleMicMute();
+            if (muted == null)
+            {
+                osd.ShowText("Nessun microfono attivo", 2000, Glyphs.Microphone);
+                return;
+            }
+            (muted.Value ? micOffChime : micOnChime).Play();
+            osd.ShowText(muted.Value ? "Microfono disattivato" : "Microfono attivo", 1500, Glyphs.Microphone,
+                muted.Value ? MutedBackground : null);
+            RefreshMicState(force: true);
+        }
+        catch (Exception ex)
+        {
+            osd.ShowText("Errore: " + ex.Message, 4000);
+        }
+    }
+
+    /// <summary>Aggiorna l'icona (pallino rosso = microfono in muto) se lo stato è cambiato.</summary>
+    void RefreshMicState(bool force = false)
+    {
+        bool? state;
+        try { state = AudioDevices.IsMicMuted(); }
+        catch { return; }
+
+        if (!force && state == micMuted && trayIcon != null) return;
+        micMuted = state;
+
+        var previous = trayIcon;
+        trayIcon = Glyphs.CreateTrayIcon(micMuted == true);
+        tray.Icon = trayIcon;
+        previous?.Dispose();
+        UpdateTooltip(force: true);
+    }
+
+    // ---- Menu e tooltip ----
 
     void BuildMenu()
     {
@@ -107,7 +169,17 @@ sealed class TrayApp : ApplicationContext
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var cycleMenu = new ToolStripMenuItem($"{HotkeyText} alterna tra");
+        var mic = new ToolStripMenuItem($"Microfono in muto ({MicHotkeyText})")
+        {
+            Checked = micMuted == true,
+            Enabled = micMuted != null,
+        };
+        mic.Click += (_, _) => ToggleMic();
+        menu.Items.Add(mic);
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        var cycleMenu = new ToolStripMenuItem($"{OutputHotkeyText} alterna tra");
         foreach (var device in devices)
         {
             var item = new ToolStripMenuItem(device.Name)
@@ -169,7 +241,8 @@ sealed class TrayApp : ApplicationContext
         {
             string? id = AudioDevices.GetDefaultOutputId();
             var device = AudioDevices.GetActiveOutputs().FirstOrDefault(d => d.Id == id);
-            string tip = $"Uscita audio: {device?.ShortName ?? "nessuna"}\n{HotkeyText} per cambiare";
+            string micText = micMuted switch { true => "in muto", false => "attivo", null => "assente" };
+            string tip = $"Uscita: {device?.ShortName ?? "nessuna"}\nMicrofono: {micText}\n{OutputHotkeyText} uscita, {MicHotkeyText} microfono";
             tray.Text = tip.Length > 127 ? tip[..127] : tip;
         }
         catch
@@ -180,43 +253,49 @@ sealed class TrayApp : ApplicationContext
 
     protected override void ExitThreadCore()
     {
-        hotkey.Dispose();
+        micWatch.Stop();
+        micWatch.Dispose();
+        hotkeys.Dispose();
         tray.Visible = false;
         tray.Dispose();
+        trayIcon?.Dispose();
         osd.Dispose();
-        chime.Dispose();
+        outputChime.Dispose();
+        micOnChime.Dispose();
+        micOffChime.Dispose();
         base.ExitThreadCore();
     }
 }
 
-/// <summary>Finestra invisibile che riceve la scorciatoia globale.</summary>
+/// <summary>Finestra invisibile che riceve le scorciatoie globali.</summary>
 sealed class HotkeyWindow : NativeWindow, IDisposable
 {
     const int WM_HOTKEY = 0x0312;
-    const int HotkeyId = 1;
-    bool registered;
+    readonly List<int> registered = new();
 
-    public event Action? Pressed;
+    /// <summary>Scatta con l'id della scorciatoia premuta.</summary>
+    public event Action<int>? Pressed;
 
     // HWND_MESSAGE: finestra di soli messaggi, mai visibile.
     public HotkeyWindow() => CreateHandle(new CreateParams { Parent = new IntPtr(-3) });
 
-    public bool Register(uint modifiers, uint key)
+    public bool Register(int id, uint modifiers, uint key)
     {
-        registered = RegisterHotKey(Handle, HotkeyId, modifiers, key);
-        return registered;
+        if (!RegisterHotKey(Handle, id, modifiers, key)) return false;
+        registered.Add(id);
+        return true;
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_HOTKEY && (int)m.WParam == HotkeyId) Pressed?.Invoke();
+        if (m.Msg == WM_HOTKEY) Pressed?.Invoke((int)m.WParam);
         base.WndProc(ref m);
     }
 
     public void Dispose()
     {
-        if (registered) UnregisterHotKey(Handle, HotkeyId);
-        registered = false;
+        foreach (int id in registered) UnregisterHotKey(Handle, id);
+        registered.Clear();
         DestroyHandle();
     }
 
