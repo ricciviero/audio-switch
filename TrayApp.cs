@@ -15,6 +15,7 @@ sealed class TrayApp : ApplicationContext
     readonly NotifyIcon tray;
     readonly HotkeyWindow hotkey = new();
     readonly Osd osd = new();
+    readonly Chime chime = new();
     DateTime lastTooltipUpdate = DateTime.MinValue;
 
     public TrayApp()
@@ -68,6 +69,7 @@ sealed class TrayApp : ApplicationContext
         try
         {
             AudioDevices.SetDefaultOutput(device.Id);
+            chime.Play(); // suona già sulla nuova uscita
             osd.ShowText(device.ShortName);
             UpdateTooltip(force: true);
         }
@@ -182,6 +184,7 @@ sealed class TrayApp : ApplicationContext
         tray.Visible = false;
         tray.Dispose();
         osd.Dispose();
+        chime.Dispose();
         base.ExitThreadCore();
     }
 }
